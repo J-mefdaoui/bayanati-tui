@@ -105,65 +105,122 @@ func renderLoginScreen(m Model) string {
 }
 
 func renderReportsPanel(m Model) string {
-	panelWidth := (m.Width - 8) * 40 / 100
-	if panelWidth < 40 {
-		panelWidth = 40
-	}
+    panelWidth := (m.Width - 8) * 40 / 100
+    if panelWidth < 40 {
+        panelWidth = 40
+    }
 
-	maxItems := (m.Height - 12) / 2
-	if maxItems < 3 {
-		maxItems = 3
-	}
+    // Calculate available height for list
+    listHeight := m.Height - 18  // Reserve space for search bar, title, pagination
+    if listHeight < 5 {
+        listHeight = 5
+    }
 
-	title := lipgloss.NewStyle().Bold(true).Foreground(greenAccent).Render("[R] REPORTS (PDF Batches)")
+    // Build search bar
+    searchBar := ""
+    if m.SearchFocused {
+        searchBar = lipgloss.NewStyle().
+            Foreground(greenAccent).
+            Render(fmt.Sprintf("⚲ %s▌", m.SearchQuery))
+    } else {
+        searchBar = lipgloss.NewStyle().
+            Foreground(mutedColor).
+            Render(fmt.Sprintf("⚲ %s", m.SearchQuery))
+        if m.SearchQuery == "" {
+            searchBar = lipgloss.NewStyle().
+                Foreground(mutedColor).
+                Render("⚲ Search by ID, governorate, date, or status...")
+        }
+    }
+    
+    // Clear button
+    clearBtn := ""
+    if m.SearchQuery != "" {
+        clearBtn = buttonStyle.Render("[Clear]")
+    }
+    
+    // Search header
+    searchHeader := lipgloss.JoinHorizontal(lipgloss.Left, searchBar, "  ", clearBtn)
+    
+    // Title with count
+    title := lipgloss.NewStyle().Bold(true).Foreground(greenAccent).Render("[R] REPORTS (PDF Batches)")
+    countInfo := lipgloss.NewStyle().Foreground(mutedColor).Render(fmt.Sprintf("Showing %d of %d", 
+        len(m.FilteredReports), len(m.Reports)))
+    
+    header := lipgloss.JoinHorizontal(lipgloss.Left, title, "  ", countInfo)
+    
+    if len(m.FilteredReports) == 0 {
+        content := panelStyle.Width(panelWidth).Render(
+            searchHeader + "\n\n" + header + "\n\nNo reports found matching search")
+        return content
+    }
 
-	if len(m.Reports) == 0 {
-		return panelStyle.Width(panelWidth).Render(title + "\n\nNo reports found")
-	}
+    // Get current page reports
+    pageReports := m.currentPageReports()
+    
+    // Build items list
+    var items []string
+    startIdx := 0
+    endIdx := len(pageReports)
+    
+    for i := startIdx; i < endIdx; i++ {
+        r := pageReports[i]
+        shortID := r.ID
+        if len(shortID) > 8 {
+          shortID = shortID[:8]
+        }
+        
+        // Calculate global index for display
+        globalIdx := (m.CurrentPage-1)*m.ItemsPerPage + i + 1
+        
+        line := fmt.Sprintf("Batch[%d]-[%s]-[%s]", globalIdx, r.Created[:10], shortID)
+        
+        // Check if this is the selected report
+        isSelected := m.CurrentReport != nil && m.CurrentReport.ID == r.ID
+        
+        if isSelected {
+            line = selectedStyle.Render("> " + line)
+        } else {
+            line = "  " + line
+        }
+        if r.Verified {
+            line += " [✔]"
+        }
+        items = append(items, line)
+    }
 
-	startIdx := 0
-	endIdx := len(m.Reports)
-	if len(m.Reports) > maxItems {
-		startIdx = m.SelectedReportIdx - maxItems/2
-		if startIdx < 0 {
-			startIdx = 0
-		}
-		endIdx = startIdx + maxItems
-		if endIdx > len(m.Reports) {
-			endIdx = len(m.Reports)
-			startIdx = endIdx - maxItems
-			if startIdx < 0 {
-				startIdx = 0
-			}
-		}
-	}
+    // Build pagination controls
+    pagination := ""
+    if m.TotalPages > 1 {
+        prevBtn := "[← Prev]"
+        nextBtn := "[Next →]"
+        if m.CurrentPage == 1 {
+            prevBtn = "  ← Prev  "
+        }
+        if m.CurrentPage == m.TotalPages {
+            nextBtn = "  Next →  "
+        }
+        
+        pageInfo := fmt.Sprintf(" Page %d of %d ", m.CurrentPage, m.TotalPages)
+        pagination = lipgloss.JoinHorizontal(lipgloss.Center, 
+            prevBtn, pageInfo, nextBtn)
+    }
 
-	var items []string
-	for i := startIdx; i < endIdx; i++ {
-		r := m.Reports[i]
-		shortID := r.ID
-		if len(shortID) > 8 {
-			shortID = shortID[:8]
-		}
-		line := fmt.Sprintf("Batch[%d]-[%s]-[%s]", i+1, r.Created[:10], shortID)
-		if m.ActivePanel == 0 && i == m.SelectedReportIdx {
-			line = selectedStyle.Render("> " + line)
-		} else {
-			line = "  " + line
-		}
-		if r.Verified {
-			line += " [✔]"
-		}
-		items = append(items, line)
-	}
+    // Combine all
 
-	if len(m.Reports) > maxItems {
-		scrollPos := (m.SelectedReportIdx * 100) / len(m.Reports)
-		items = append(items, fmt.Sprintf("\n   Scroll: %d%%", scrollPos))
-	}
+		separator := lipgloss.NewStyle().
+    	Padding(0, 1).
+    	Foreground(greenMid).
+    	Render(strings.Repeat("─", panelWidth-4))
 
-	return panelStyle.Width(panelWidth).Render(title + "\n\n" + strings.Join(items, "\n"))
+    content := searchHeader + "\n" +
+    	separator + "\n" +
+   		header + "\n\n" +
+    	strings.Join(items, "\n") + "\n\n" +
+    	pagination
+		return panelStyle.Width(panelWidth).Render(content)
 }
+
 
 func renderGeoTagsPanel(m Model) string {
 	panelWidth := (m.Width - 8) * 40 / 100
@@ -333,43 +390,53 @@ func renderDetailsPanel(m Model) string {
 		buttons += buttonStyle.Render("[O] Open in Map")
 	}
 
-	snackbarContent := ""
-	if m.Snackbar != "" {
-		snackColor := greenAccent
-		if m.SnackbarType == "error" {
-			snackColor = red
-		}
-		separator := strings.Repeat("─", panelWidth-4)
-		snackbarContent = "\n\n" + separator + "\n" +
-			snackbarStyle.Foreground(snackColor).Width(panelWidth-4).Render(m.Snackbar)
-	}
-
-	return detailStyle.Width(panelWidth).Render(content + buttons + snackbarContent)
+	
+	return detailStyle.Width(panelWidth).Render(content + buttons)
 }
+
 
 func renderMainScreen(m Model) string {
-	titleText := fmt.Sprintf("Bayanati - %s verify dashboard", strings.Title(m.Governorate))
-	titleWidth := m.Width - 20
-	if titleWidth < len(titleText)+10 {
-		titleWidth = len(titleText) + 10
-	}
-	header := titleStyle.Width(titleWidth).Render(titleText)
-	header += "  " + lipgloss.NewStyle().Foreground(mutedColor).Render("[Ctrl+C] Exit")
+    // Build title with snackbar message
+    var titleText string
+    if m.Snackbar != "" {
+        // Show snackbar in the title area
+        snackColor := greenAccent
+        if m.SnackbarType == "error" {
+            snackColor = red
+        }
+        snackDisplay := lipgloss.NewStyle().
+            Foreground(snackColor).
+            Bold(true).
+            Render(fmt.Sprintf(" ◌ %s ", m.Snackbar))
+        
+        titleText = fmt.Sprintf("Bayanati - %s verify dashboard%s", 
+            strings.Title(m.Governorate), snackDisplay)
+    } else {
+        titleText = fmt.Sprintf("Bayanati - %s verify dashboard", strings.Title(m.Governorate))
+    }
+    
+    titleWidth := m.Width - 20
+    if titleWidth < len(titleText)+10 {
+        titleWidth = len(titleText) + 10
+    }
+    header := titleStyle.Width(titleWidth).Render(titleText)
+    header += "  " + lipgloss.NewStyle().Foreground(mutedColor).Render("[Ctrl+C] Exit")
 
-	leftPanel := renderReportsPanel(m)
-	rightPanel := renderGeoTagsPanel(m)
-	topRow := lipgloss.JoinHorizontal(lipgloss.Top, leftPanel, "  ", rightPanel)
+    leftPanel := renderReportsPanel(m)
+    rightPanel := renderGeoTagsPanel(m)
+    topRow := lipgloss.JoinHorizontal(lipgloss.Top, leftPanel, "  ", rightPanel)
 
-	details := renderDetailsPanel(m)
+    details := renderDetailsPanel(m)
 
-	footer := lipgloss.NewStyle().Foreground(mutedColor).Render(
-		"[Tab] Switch Panels  [Up/Down] Navigate  [V] Verify Report  [P] View PDF  [O] Open Map (on Geotags)",
-	)
+    footer := lipgloss.NewStyle().Foreground(mutedColor).Render(
+        "[/] Search  [←/→] Page  [V] Verify  [P] PDF  [O] Map  [Esc] Clear  [Ctrl+C] Exit",
+    )
 
-	body := lipgloss.JoinVertical(lipgloss.Left, topRow, "\n", details)
+    body := lipgloss.JoinVertical(lipgloss.Left, topRow, "\n", details)
 
-	return lipgloss.JoinVertical(lipgloss.Left, header, "\n", body, "\n", footer)
+    return lipgloss.JoinVertical(lipgloss.Left, header, "\n", body, "\n", footer)
 }
+
 
 func view(m Model) string {
 	if !m.LoggedIn {

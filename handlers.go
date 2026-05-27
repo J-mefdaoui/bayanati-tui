@@ -35,6 +35,113 @@ func cleanupCache(m *Model) {
 	}
 }
 
+// Search and filter functions
+func (m *Model) filterReports() {
+	if m.SearchQuery == "" {
+		m.FilteredReports = m.Reports
+	} else {
+		filtered := []Report{}
+		query := strings.ToLower(m.SearchQuery)
+
+		for _, report := range m.Reports {
+			if matchesSearch(report, m.Geotags, query) {
+				filtered = append(filtered, report)
+			}
+		}
+		m.FilteredReports = filtered
+	}
+
+	// Update pagination
+	totalItems := len(m.FilteredReports)
+	m.TotalPages = (totalItems + m.ItemsPerPage - 1) / m.ItemsPerPage
+	if m.TotalPages == 0 {
+		m.TotalPages = 1
+	}
+	if m.CurrentPage > m.TotalPages {
+		m.CurrentPage = m.TotalPages
+	}
+	if m.CurrentPage < 1 {
+		m.CurrentPage = 1
+	}
+}
+
+func matchesSearch(report Report, geotags []GeoTags, query string) bool {
+	// Search by Report ID
+	if strings.Contains(strings.ToLower(report.ID), query) {
+		return true
+	}
+
+	// Search by date (YYYY-MM-DD)
+	if len(query) == 10 && query[4] == '-' && query[7] == '-' {
+		if strings.Contains(report.Created[:10], query) {
+			return true
+		}
+	}
+
+	// Search by status
+	if query == "verified" && report.Verified {
+		return true
+	}
+	if query == "unverified" && !report.Verified {
+		return true
+	}
+
+	// Search by geotag properties (governorate, category)
+	for _, refID := range report.Reference {
+		for _, gt := range geotags {
+			if gt.ID == refID {
+				if strings.Contains(strings.ToLower(gt.Governorate), query) {
+					return true
+				}
+				if strings.Contains(strings.ToLower(gt.Category), query) {
+					return true
+				}
+			}
+		}
+	}
+
+	return false
+}
+
+func (m *Model) currentPageReports() []Report {
+	start := (m.CurrentPage - 1) * m.ItemsPerPage
+	end := start + m.ItemsPerPage
+	if end > len(m.FilteredReports) {
+		end = len(m.FilteredReports)
+	}
+	if start > len(m.FilteredReports) {
+		return []Report{}
+	}
+	return m.FilteredReports[start:end]
+}
+
+func (m *Model) nextPage() {
+	if m.CurrentPage < m.TotalPages {
+		m.CurrentPage++
+	}
+}
+
+func (m *Model) prevPage() {
+	if m.CurrentPage > 1 {
+		m.CurrentPage--
+	}
+}
+
+func (m *Model) firstPage() {
+	m.CurrentPage = 1
+}
+
+func (m *Model) lastPage() {
+	m.CurrentPage = m.TotalPages
+}
+
+func (m *Model) clearSearch() {
+	m.SearchQuery = ""
+	m.SearchFocused = false
+	m.CurrentPage = 1
+	m.filterReports()
+}
+
 func updateLogin(m *Model, msg tea.Msg) (*Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
@@ -96,20 +203,47 @@ func updateMain(m *Model, msg tea.Msg) (*Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyMsg:
+		if m.SearchFocused {
+        switch msg.String() {
+        case "esc":
+            m.clearSearch()
+        case "enter":
+            m.SearchFocused = false
+            m.filterReports()
+        case "backspace":
+            if len(m.SearchQuery) > 0 {
+                m.SearchQuery = m.SearchQuery[:len(m.SearchQuery)-1]
+                m.filterReports()
+                m.CurrentPage = 1
+            }
+        default:
+            char := msg.String()
+            if len(char) == 1 && char >= " " && char <= "~" {
+                m.SearchQuery += char
+                m.filterReports()
+                m.CurrentPage = 1
+            }
+        }
+        return m, nil
+    }
+
 		switch msg.String() {
 		case "ctrl+c", "q":
 			return m, tea.Quit
 		case "tab":
 			m.ActivePanel = 1 - m.ActivePanel
 		case "up", "k":
-			if m.ActivePanel == 0 && len(m.Reports) > 0 {
-				m.SelectedReportIdx = (m.SelectedReportIdx - 1 + len(m.Reports)) % len(m.Reports)
-				m.CurrentReport = &m.Reports[m.SelectedReportIdx]
-				m.CurrentGeotag = nil
-				filterGeotagsForCurrentReport(m)
-				m.SelectedGeotagIdx = 0
-				if len(m.FilteredGeotags) > 0 {
-					m.CurrentGeotag = &m.FilteredGeotags[0]
+			if m.ActivePanel == 0 && len(m.FilteredReports) > 0 {
+				pageReports := m.currentPageReports()
+				if len(pageReports) > 0 {
+					m.SelectedReportIdx = (m.SelectedReportIdx - 1 + len(pageReports)) % len(pageReports)
+					m.CurrentReport = &pageReports[m.SelectedReportIdx]
+					m.CurrentGeotag = nil
+					filterGeotagsForCurrentReport(m)
+					m.SelectedGeotagIdx = 0
+					if len(m.FilteredGeotags) > 0 {
+						m.CurrentGeotag = &m.FilteredGeotags[0]
+					}
 				}
 			} else if m.ActivePanel == 1 && len(m.FilteredGeotags) > 0 {
 				m.SelectedGeotagIdx = (m.SelectedGeotagIdx - 1 + len(m.FilteredGeotags)) % len(m.FilteredGeotags)
@@ -117,14 +251,17 @@ func updateMain(m *Model, msg tea.Msg) (*Model, tea.Cmd) {
 				m.CurrentReport = nil
 			}
 		case "down", "j":
-			if m.ActivePanel == 0 && len(m.Reports) > 0 {
-				m.SelectedReportIdx = (m.SelectedReportIdx + 1) % len(m.Reports)
-				m.CurrentReport = &m.Reports[m.SelectedReportIdx]
-				m.CurrentGeotag = nil
-				filterGeotagsForCurrentReport(m)
-				m.SelectedGeotagIdx = 0
-				if len(m.FilteredGeotags) > 0 {
-					m.CurrentGeotag = &m.FilteredGeotags[0]
+			if m.ActivePanel == 0 && len(m.FilteredReports) > 0 {
+				pageReports := m.currentPageReports()
+				if len(pageReports) > 0 {
+					m.SelectedReportIdx = (m.SelectedReportIdx + 1) % len(pageReports)
+					m.CurrentReport = &pageReports[m.SelectedReportIdx]
+					m.CurrentGeotag = nil
+					filterGeotagsForCurrentReport(m)
+					m.SelectedGeotagIdx = 0
+					if len(m.FilteredGeotags) > 0 {
+						m.CurrentGeotag = &m.FilteredGeotags[0]
+					}
 				}
 			} else if m.ActivePanel == 1 && len(m.FilteredGeotags) > 0 {
 				m.SelectedGeotagIdx = (m.SelectedGeotagIdx + 1) % len(m.FilteredGeotags)
@@ -164,16 +301,71 @@ func updateMain(m *Model, msg tea.Msg) (*Model, tea.Cmd) {
 			if m.ActivePanel == 1 && m.CurrentGeotag != nil {
 				return m, openCoordinates(m.CurrentGeotag.Location.Lat, m.CurrentGeotag.Location.Lon)
 			}
+		case "/":
+			m.SearchFocused = true
+			return m, nil
+		case "esc":
+			if m.SearchFocused {
+				m.clearSearch()
+			}
+			return m, nil
+		case "enter":
+			if m.SearchFocused {
+				m.SearchFocused = false
+				m.filterReports()
+			}
+			return m, nil
+		case "backspace":
+			if m.SearchFocused && len(m.SearchQuery) > 0 {
+				m.SearchQuery = m.SearchQuery[:len(m.SearchQuery)-1]
+				m.filterReports()
+				m.CurrentPage = 1
+			}
+			return m, nil
+		case "left", "h":
+			if !m.SearchFocused {
+				m.prevPage()
+			}
+			return m, nil
+		case "right", "l":
+			if !m.SearchFocused {
+				m.nextPage()
+			}
+			return m, nil
+		case "g":
+			if !m.SearchFocused {
+				m.firstPage()
+			}
+			return m, nil
+		case "G":
+			if !m.SearchFocused {
+				m.lastPage()
+			}
+			return m, nil
+		default:
+			// Handle typing in search bar when focused
+			if m.SearchFocused {
+				char := msg.String()
+				if len(char) == 1 && char >= " " && char <= "~" {
+					m.SearchQuery += char
+					m.filterReports()
+					m.CurrentPage = 1
+				}
+			}
 		}
 
 	case FetchReportsMsg:
 		if msg.Err == nil {
 			m.Reports = msg.Reports
-			if len(m.Reports) > 0 {
-				m.CurrentReport = &m.Reports[0]
-				filterGeotagsForCurrentReport(m)
-				if len(m.FilteredGeotags) > 0 {
-					m.CurrentGeotag = &m.FilteredGeotags[0]
+			m.filterReports()
+			if len(m.FilteredReports) > 0 {
+				pageReports := m.currentPageReports()
+				if len(pageReports) > 0 {
+					m.CurrentReport = &pageReports[0]
+					filterGeotagsForCurrentReport(m)
+					if len(m.FilteredGeotags) > 0 {
+						m.CurrentGeotag = &m.FilteredGeotags[0]
+					}
 				}
 			}
 			return m, func() tea.Msg {
@@ -188,9 +380,16 @@ func updateMain(m *Model, msg tea.Msg) (*Model, tea.Cmd) {
 	case FetchGeoTagsMsg:
 		if msg.Err == nil {
 			m.Geotags = msg.Geotags
-			filterGeotagsForCurrentReport(m)
-			if len(m.FilteredGeotags) > 0 && m.CurrentGeotag == nil {
-				m.CurrentGeotag = &m.FilteredGeotags[0]
+			m.filterReports()
+			if len(m.FilteredReports) > 0 && m.CurrentReport == nil {
+				pageReports := m.currentPageReports()
+				if len(pageReports) > 0 {
+					m.CurrentReport = &pageReports[0]
+					filterGeotagsForCurrentReport(m)
+					if len(m.FilteredGeotags) > 0 {
+						m.CurrentGeotag = &m.FilteredGeotags[0]
+					}
+				}
 			}
 			return m, func() tea.Msg {
 				return SnackbarMsg{Message: fmt.Sprintf("Loaded %d geotags", len(m.Geotags)), MsgType: "success"}
